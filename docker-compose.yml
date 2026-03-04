@@ -1,0 +1,39 @@
+version: '3.9'
+
+services:
+  caddy:
+    image: caddy:latest
+    container_name: reverse-proxy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - web
+
+  api-example:
+    build: ./services/api-example
+    container_name: api-example
+    restart: unless-stopped
+    networks:
+      - web
+  
+  # Other services can be added here
+  #api-payments:
+  #  build: ./services/api-payments
+  #  container_name: api-payments
+  #  restart: unless-stopped
+  #  networks:
+  #    - web
+
+volumes:
+  caddy_data:
+  caddy_config:
+
+networks:
+  web:
+    driver: bridge
