@@ -74,8 +74,9 @@ vps/
 ├── setup-github-ssh.sh   # GitHub SSH authentication helper
 ├── docker-compose.yml    # Service orchestration
 ├── Caddyfile            # Reverse proxy configuration
+├── .env.example         # Environment variables template
 └── services/
-    └── api-example/     # Example Go API service
+    └── api-example/     # Example Go API service with PostgreSQL
         ├── main.go
         ├── Dockerfile
         └── go.mod
@@ -119,27 +120,130 @@ chmod +x setup.sh
 sudo ./setup.sh
 ```
 
-### 4. Configure Your Domain
+### 4. Configure DNS (Namecheap)
 
-Edit the Caddyfile and replace `api.midominio.com` with your actual domain:
+Before configuring Caddy, set up your domain DNS records:
+
+#### Get Your VPS IP
+
+```bash
+# From your VPS
+curl ifconfig.me
+```
+
+Or check your Contabo control panel.
+
+#### Configure DNS Records in Namecheap
+
+1. Go to Namecheap Dashboard: https://ap.www.namecheap.com/
+2. Click "Domain List" → "Manage" next to your domain
+3. Navigate to "Advanced DNS" tab
+
+**Option A: Main Domain (jibaru.ink)**
+
+| Type | Host | Value          | TTL       |
+|------|------|----------------|-----------|
+| A    | @    | 164.68.107.2   | Automatic |
+| A    | www  | 164.68.107.2   | Automatic |
+
+**Option B: Subdomain (api.jibaru.ink)**
+
+| Type | Host | Value          | TTL       |
+|------|------|----------------|-----------|
+| A    | api  | 164.68.107.2   | Automatic |
+
+**Option C: Multiple Subdomains (Recommended)**
+
+| Type | Host  | Value          | TTL       |
+|------|-------|----------------|-----------|
+| A    | @     | 164.68.107.2   | Automatic |
+| A    | www   | 164.68.107.2   | Automatic |
+| A    | api   | 164.68.107.2   | Automatic |
+| A    | admin | 164.68.107.2   | Automatic |
+
+**Wildcard Support (Optional)**
+
+For `*.jibaru.ink`:
+
+| Type | Host | Value          | TTL       |
+|------|------|----------------|-----------|
+| A    | *    | 164.68.107.2   | Automatic |
+
+#### Verify DNS Propagation
+
+Wait 5-30 minutes, then verify:
+
+```bash
+# Check DNS resolution
+nslookup jibaru.ink
+dig jibaru.ink +short
+
+# Should return: 164.68.107.2
+
+# Test connectivity
+ping jibaru.ink
+```
+
+### 5. Configure Environment Variables
+
+Create a `.env` file with your database credentials:
+
+```bash
+cp .env.example .env
+nano .env
+```
+
+Update with secure values:
+```bash
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=your_secure_password_here
+POSTGRES_DB=appdb
+```
+
+### 6. Configure Caddyfile
+
+Edit the Caddyfile with your domain(s):
 
 ```bash
 nano Caddyfile
 ```
 
+**Current Configuration (jibaru.ink):**
 ```caddy
-your-domain.com {
+jibaru.ink, www.jibaru.ink {
+    reverse_proxy api-example:8080
+}
+
+api.jibaru.ink {
     reverse_proxy api-example:8080
 }
 ```
 
-### 5. Start Services
+**Multiple Services Example:**
+```caddy
+# Main website
+jibaru.ink, www.jibaru.ink {
+    reverse_proxy frontend:3000
+}
+
+# API service
+api.jibaru.ink {
+    reverse_proxy api-example:8080
+}
+
+# Admin panel
+admin.jibaru.ink {
+    reverse_proxy admin-panel:3000
+}
+```
+
+### 7. Start Services
 
 ```bash
 docker compose up -d
 ```
 
-### 6. Verify Deployment
+### 8. Verify Deployment
 
 ```bash
 # Check running containers
@@ -149,7 +253,121 @@ docker compose ps
 docker compose logs -f
 
 # Test the API
-curl https://your-domain.com/hello
+curl https://jibaru.ink/hello
+
+# Test health endpoint (includes database status)
+curl https://jibaru.ink/health
+```
+
+## PostgreSQL Database
+
+The setup includes a PostgreSQL 16 database service with persistent storage.
+
+### Database Configuration
+
+**Default Credentials** (change in production):
+- User: `postgres`
+- Password: `postgres`
+- Database: `appdb`
+- Host: `postgres` (container name)
+- Port: `5432` (internal, not exposed externally)
+
+### Connecting to the Database
+
+**From your application:**
+```go
+DATABASE_URL=postgres://postgres:postgres@postgres:5432/appdb?sslmode=disable
+```
+
+**From your VPS (using docker exec):**
+```bash
+# Access PostgreSQL CLI
+docker exec -it postgres psql -U postgres -d appdb
+
+# Run SQL commands
+docker exec -it postgres psql -U postgres -d appdb -c "SELECT version();"
+
+# Create a table example
+docker exec -it postgres psql -U postgres -d appdb -c "
+CREATE TABLE IF NOT EXISTS users (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100),
+    email VARCHAR(100) UNIQUE,
+    created_at TIMESTAMP DEFAULT NOW()
+);"
+```
+
+### Database Backups
+
+**Create a backup:**
+```bash
+# Backup to file
+docker exec postgres pg_dump -U postgres appdb > backup_$(date +%Y%m%d_%H%M%S).sql
+
+# Backup compressed
+docker exec postgres pg_dump -U postgres appdb | gzip > backup_$(date +%Y%m%d_%H%M%S).sql.gz
+```
+
+**Restore from backup:**
+```bash
+# Restore from SQL file
+cat backup.sql | docker exec -i postgres psql -U postgres -d appdb
+
+# Restore from compressed backup
+gunzip -c backup.sql.gz | docker exec -i postgres psql -U postgres -d appdb
+```
+
+### Database Monitoring
+
+```bash
+# View PostgreSQL logs
+docker compose logs postgres -f
+
+# Check database size
+docker exec postgres psql -U postgres -d appdb -c "
+SELECT pg_size_pretty(pg_database_size('appdb'));"
+
+# List all databases
+docker exec postgres psql -U postgres -c "\l"
+
+# List all tables
+docker exec postgres psql -U postgres -d appdb -c "\dt"
+```
+
+### Changing Database Credentials
+
+1. Update your `.env` file:
+```bash
+nano .env
+```
+
+2. Restart services:
+```bash
+docker compose down
+docker compose up -d
+```
+
+**Warning:** Changing credentials after initial setup may require rebuilding the database volume.
+
+### Accessing from External Tools
+
+For security, PostgreSQL is **not exposed externally** by default. To connect from tools like pgAdmin or DBeaver:
+
+**Option 1: SSH Tunnel (Recommended)**
+```bash
+# On your local machine
+ssh -L 5432:localhost:5432 root@164.68.107.2
+
+# Then connect to localhost:5432
+```
+
+**Option 2: Expose Port (Not Recommended for Production)**
+
+Edit `docker-compose.yml` to add ports:
+```yaml
+postgres:
+  ports:
+    - "5432:5432"  # Only do this for development
 ```
 
 ## Adding New Services
@@ -177,7 +395,7 @@ services:
 4. Update `Caddyfile` for routing:
 
 ```caddy
-myservice.example.com {
+myservice.jibaru.ink {
     reverse_proxy my-new-service:8080
 }
 ```
@@ -197,8 +415,14 @@ docker compose ps
 # View logs
 docker compose logs -f
 
+# View logs for specific service
+docker compose logs caddy -f
+
 # Restart services
 docker compose restart
+
+# Restart only Caddy
+docker compose restart caddy
 
 # Stop all services
 docker compose down
@@ -209,6 +433,55 @@ docker compose up -d --build
 # Update and redeploy
 git pull
 docker compose up -d --build
+```
+
+## Updating Caddy Configuration
+
+After modifying the Caddyfile, you need to apply the changes:
+
+### Option 1: Reload Without Downtime (Recommended)
+
+```bash
+# Validate configuration first (optional)
+docker exec reverse-proxy caddy validate --config /etc/caddy/Caddyfile
+
+# Reload configuration (no downtime)
+docker exec reverse-proxy caddy reload --config /etc/caddy/Caddyfile
+
+# Check logs to verify
+docker compose logs caddy -f
+```
+
+### Option 2: Restart Caddy Container
+
+```bash
+# Restart only Caddy (brief downtime)
+docker compose restart caddy
+```
+
+### Option 3: Full Restart
+
+```bash
+# Stop and start all services
+docker compose down
+docker compose up -d
+```
+
+### Recommended Workflow
+
+```bash
+# 1. Edit Caddyfile
+nano Caddyfile
+
+# 2. Validate syntax
+docker exec reverse-proxy caddy validate --config /etc/caddy/Caddyfile
+
+# 3. Apply changes without downtime
+docker exec reverse-proxy caddy reload --config /etc/caddy/Caddyfile
+
+# 4. Verify changes
+curl -I https://jibaru.ink
+docker compose logs caddy --tail 50
 ```
 
 ## Firewall Configuration
@@ -223,7 +496,7 @@ The setup script configures UFW with these rules:
 
 Caddy automatically provisions and renews SSL certificates from Let's Encrypt. Just make sure:
 
-1. Your domain DNS points to your VPS IP
+1. Your domain DNS points to your VPS IP (164.68.107.2)
 2. Ports 80 and 443 are open (handled by setup script)
 3. Your domain is correctly configured in Caddyfile
 
@@ -280,10 +553,55 @@ docker exec -it reverse-proxy wget -O- http://api-example:8080/hello
 ### DNS Issues
 ```bash
 # Verify DNS propagation
-nslookup your-domain.com
+nslookup jibaru.ink
+dig jibaru.ink +short
+# Should return: 164.68.107.2
+
+# Verify nameservers
+dig jibaru.ink NS
 
 # Check if port is accessible
-curl -I http://YOUR_VPS_IP
+curl -I http://164.68.107.2
+```
+
+### Caddy SSL Certificate Issues
+
+If Caddy can't obtain SSL certificates:
+
+```bash
+# Check Caddy logs for certificate errors
+docker compose logs caddy | grep -i "certificate\|acme\|tls"
+
+# Verify DNS points to correct IP
+dig jibaru.ink +short
+# Should return: 164.68.107.2
+
+# Verify ports 80 and 443 are open
+sudo ufw status | grep -E "80|443"
+
+# Test ACME challenge accessibility
+curl http://jibaru.ink/.well-known/acme-challenge/test
+
+# Force certificate renewal (if needed)
+docker exec reverse-proxy caddy reload --config /etc/caddy/Caddyfile --force
+```
+
+**Common causes:**
+- DNS not pointing to VPS IP
+- Ports 80 or 443 blocked by firewall
+- Domain DNS not fully propagated (wait 5-30 minutes)
+- Rate limiting from Let's Encrypt (wait 1 hour and retry)
+
+### Caddy Configuration Validation Failed
+
+```bash
+# Check syntax errors in Caddyfile
+docker exec reverse-proxy caddy validate --config /etc/caddy/Caddyfile
+
+# Common issues:
+# - Missing closing braces
+# - Invalid reverse_proxy syntax
+# - Duplicate domain definitions
 ```
 
 ## License

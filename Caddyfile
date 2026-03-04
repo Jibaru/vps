@@ -1,3 +1,7 @@
-api.midominio.com {
+jibaru.ink, www.jibaru.ink {
+    reverse_proxy api-example:8080
+}
+
+api.jibaru.ink {
     reverse_proxy api-example:8080
 }
